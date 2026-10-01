@@ -1,0 +1,39 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+
+    container_name: ${CONTAINER_NAME:-app}
+
+    restart: always
+
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:80"
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./:/app
+      - ./docker/php/Caddyfile:/etc/caddy/Caddyfile
+      - ./docker/php/php.ini:/usr/local/etc/php/conf.d/99-custom.ini
+      - caddy_data:/data
+      - caddy_config:/config
+
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  caddy_data:
+    driver: local
+
+  caddy_config:
+    driver: local

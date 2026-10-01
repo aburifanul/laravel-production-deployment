@@ -1,0 +1,19 @@
+{
+    frankenphp
+    auto_https off
+    order php_server before file_server
+}
+
+:80 {
+    root * /app/public
+
+    encode zstd gzip
+
+    @hiddenFiles {
+        path */.*
+    }
+
+    error @hiddenFiles 404
+
+    php_server
+}
