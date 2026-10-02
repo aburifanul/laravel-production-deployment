@@ -55,20 +55,44 @@ echo "========================================"
 echo " Frontend"
 echo "========================================"
 echo
-echo "Apakah project menggunakan Node.js / Vite?"
-echo
-echo "  1) Ya, jalankan npm ci && npm run build"
-echo "  2) Tidak, lewati build frontend"
-echo
 
-read -rp "Pilih [1/2]: " USE_NODE
+USE_NODE=""
+
+for ARG in "$@"; do
+    case "$ARG" in
+        --with-node)
+            USE_NODE="1"
+            ;;
+        --skip-node)
+            USE_NODE="2"
+            ;;
+        *)
+            echo "ERROR: Argumen tidak dikenal: $ARG"
+            echo
+            echo "Penggunaan:"
+            echo "  bash scripts/deploy.sh"
+            echo "  bash scripts/deploy.sh --with-node"
+            echo "  bash scripts/deploy.sh --skip-node"
+            exit 1
+            ;;
+    esac
+done
+
+if [ -z "$USE_NODE" ]; then
+    echo "Apakah project menggunakan Node.js / Vite?"
+    echo
+    echo "  1) Ya, jalankan npm ci && npm run build"
+    echo "  2) Tidak, lewati build frontend"
+    echo
+    read -rp "Pilih [1/2]: " USE_NODE
+fi
 
 case "$USE_NODE" in
     1)
         if [ ! -f package.json ]; then
             echo
             echo "ERROR: package.json tidak ditemukan."
-            echo "Project tidak dapat menjalankan build Node/Vite."
+            echo "Tidak dapat menjalankan build frontend."
             exit 1
         fi
 
@@ -113,19 +137,11 @@ echo
 
 echo "Mencari container service 'app'..."
 
-OLD_CONTAINER="$(
-    podman ps -aq \
-        --filter "label=com.docker.compose.service=app" \
-        | head -n 1
-)"
+OLD_CONTAINER="$(podman ps -aq --filter "label=com.docker.compose.service=app" | head -n 1)"
 
 if [ -n "$OLD_CONTAINER" ]; then
 
-    OLD_CONTAINER_NAME="$(
-        podman inspect "$OLD_CONTAINER" \
-            --format '{{.Name}}' \
-            | sed 's#^/##'
-    )"
+    OLD_CONTAINER_NAME="$(podman inspect "$OLD_CONTAINER" --format '{{.Name}}' | sed 's#^/##')"
 
     echo "Container lama ditemukan:"
     echo "$OLD_CONTAINER_NAME"
@@ -175,12 +191,7 @@ echo
 
 echo "Mencari container service 'app'..."
 
-CONTAINER_NAME="$(
-    podman ps \
-        --filter "label=com.docker.compose.service=app" \
-        --format "{{.Names}}" \
-        | head -n 1
-)"
+CONTAINER_NAME="$(podman ps --filter "label=com.docker.compose.service=app" --format "{{.Names}}" | head -n 1)"
 
 if [ -z "$CONTAINER_NAME" ]; then
 
@@ -209,20 +220,18 @@ echo "Menunggu container aplikasi siap..."
 
 for i in {1..30}; do
 
-    STATUS="$(
-        podman inspect "$CONTAINER_NAME" \
-            --format '{{.State.Status}}' \
-            2>/dev/null || true
-    )
+    STATUS="$(podman inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null || true)"
 
     if [ "$STATUS" = "running" ]; then
         break
     fi
 
     if [ "$STATUS" = "exited" ] || [ "$STATUS" = "dead" ]; then
+
         echo
         echo "ERROR: Container '$CONTAINER_NAME' berhenti."
         echo
+
         echo "Status container:"
         podman ps -a \
             --filter "name=^${CONTAINER_NAME}$"
@@ -237,10 +246,7 @@ for i in {1..30}; do
     sleep 1
 done
 
-STATUS="$(
-    podman inspect "$CONTAINER_NAME" \
-        --format '{{.State.Status}}'
-)"
+STATUS="$(podman inspect "$CONTAINER_NAME" --format '{{.State.Status}}')"
 
 if [ "$STATUS" != "running" ]; then
 
@@ -303,7 +309,6 @@ echo
 echo "Migration selesai."
 echo
 
-
 echo "Membersihkan cache Laravel..."
 
 podman exec "$CONTAINER_NAME" \
@@ -327,10 +332,7 @@ echo " Deployment Check"
 echo "========================================"
 echo
 
-FINAL_STATUS="$(
-    podman inspect "$CONTAINER_NAME" \
-        --format '{{.State.Status}}'
-)"
+FINAL_STATUS="$(podman inspect "$CONTAINER_NAME" --format '{{.State.Status}}')"
 
 if [ "$FINAL_STATUS" != "running" ]; then
     echo "ERROR: Container berhenti setelah deployment."
