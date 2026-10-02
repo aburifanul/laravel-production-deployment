@@ -99,10 +99,20 @@ echo
 # Get App Container
 # ========================================
 
-CONTAINER_NAME="$(podman compose ps -q app)"
+echo "Mencari container service 'app'..."
+
+CONTAINER_NAME="$(
+    podman ps \
+        --filter "label=com.docker.compose.service=app" \
+        --format "{{.Names}}" \
+        | head -n 1
+)"
 
 if [ -z "$CONTAINER_NAME" ]; then
     echo "ERROR: Container service 'app' tidak ditemukan."
+    echo
+    echo "Container yang sedang berjalan:"
+    podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
     exit 1
 fi
 
@@ -119,6 +129,19 @@ echo
 echo "Menunggu container aplikasi siap..."
 
 sleep 5
+
+if [ "$(podman inspect "$CONTAINER_NAME" --format '{{.State.Status}}')" != "running" ]; then
+    echo "ERROR: Container '$CONTAINER_NAME' tidak berjalan."
+    echo
+    echo "Status container:"
+    podman ps -a --filter "name=^${CONTAINER_NAME}$"
+    echo
+    echo "Log container:"
+    podman logs --tail 50 "$CONTAINER_NAME"
+    exit 1
+fi
+
+echo "Container aplikasi siap."
 
 echo
 
