@@ -19,6 +19,8 @@ Cari gejala yang kamu alami. Aturan umum: **perbaiki dari layer terdalam dulu** 
 - [Permission denied di storage](#permission-denied-di-storage)
 - [Nilai `${APP_NAME}` tampil apa adanya](#nilai-app_name-tampil-apa-adanya)
 - [Google OAuth: error 400 invalid_request](#google-oauth-error-400-invalid_request)
+- [deploy.sh tidak menemukan `.env` atau container](#deploysh-tidak-menemukan-env-atau-container)
+- [deploy.sh gagal di HTTP health check](#deploysh-gagal-di-http-health-check)
 - [Cloudflare: origin berhasil, domain gagal](#cloudflare-origin-berhasil-domain-gagal)
 - [Container tidak hidup setelah reboot](#container-tidak-hidup-setelah-reboot)
 - [Nginx](#nginx)
@@ -114,9 +116,17 @@ podman exec <CONTAINER_NAME> php artisan optimize:clear
 podman exec <CONTAINER_NAME> php artisan optimize
 ```
 
+Jika nilainya masih lama, hapus container lalu buat lagi (atau jalankan `bash scripts/deploy.sh --skip-node`):
+
+```bash
+podman stop <CONTAINER_NAME>
+podman rm <CONTAINER_NAME>
+podman compose up -d
+```
+
 ## Halaman tanpa CSS/JS
 
-Jika project memakai Vite, asset belum di-build karena `public/build` tidak ada di Git. Build ulang ([langkah 4.5](04-deploy-server.md#45-build-asset-frontend)) atau jalankan `bash scripts/deploy.sh` dan pilih **1**, lalu:
+Jika project memakai Vite, asset belum di-build karena `public/build` tidak ada di Git. Build ulang ([langkah 4.5](04-deploy-server.md#45-build-asset-frontend)) atau jalankan `bash scripts/deploy.sh --with-node`, lalu:
 
 ```bash
 podman exec <CONTAINER_NAME> php artisan optimize:clear
@@ -199,6 +209,39 @@ podman exec <CONTAINER_NAME> php artisan tinker --execute="dump(config('app.url'
 ```
 
 Redirect URI di Google Cloud Console harus sama persis. Panduan lengkap: [8. Google OAuth](08-google-oauth.md).
+
+## deploy.sh tidak menemukan `.env` atau container
+
+| Pesan | Penyebab dan perbaikan |
+|-------|------------------------|
+| `ERROR: File .env tidak ditemukan` | Script harus dijalankan dari project yang punya `.env`. Buat dulu: `cp .env.example .env`, lalu isi nilainya ([langkah 4.2](04-deploy-server.md#42-buat-env-production)) |
+| `ERROR: podman/git/curl tidak ditemukan` | Pasang paketnya: `sudo apt install -y podman git curl` |
+| `ERROR: Container '...' tidak ditemukan` setelah `up -d` | `CONTAINER_NAME` di `.env` tidak sama dengan nama container yang dibuat Compose. Cek `podman ps -a` dan pastikan `docker-compose.yml` memakai `container_name: ${CONTAINER_NAME:-app}` |
+| `ERROR: Container '...' dimiliki project lain` | `CONTAINER_NAME` di `.env` sama dengan container milik folder lain. Script berhenti tanpa menyentuh apa pun. Ganti `CONTAINER_NAME` menjadi nama yang unik, lalu `podman compose up -d` atau jalankan script lagi |
+| `WARNING: Pemilik container tidak dapat diverifikasi` | Container itu tidak punya label `com.docker.compose.project.working_dir` (dibuat manual atau oleh provider lain). Script tetap lanjut. Pastikan nama itu memang milik project ini |
+| `ERROR: Deployment lain sedang berjalan` | Ada `deploy.sh` lain yang masih berjalan di folder yang sama. Tunggu selesai. Cek dengan `ps aux \| grep deploy.sh`. Kunci otomatis lepas saat script berhenti |
+| `ERROR: Argumen tidak dikenal` | Opsi yang tersedia hanya `--with-node` dan `--skip-node` |
+| `ERROR: package.json tidak ditemukan` | Kamu memilih build frontend, tetapi project tidak punya `package.json`. Pakai `--skip-node` |
+
+Script membaca `CONTAINER_NAME` dan `APP_PORT` dari `.env`. Jika dua project memakai nama atau port yang sama, container akan bentrok, jadi pastikan keduanya unik per project.
+
+## deploy.sh gagal di HTTP health check
+
+Gejala: `ERROR: HTTP health check gagal.` dengan status `500`, `000`, atau tidak ada response.
+
+Pada tahap ini container baru **sudah menggantikan** yang lama, jadi perbaiki penyebabnya lalu jalankan script lagi. Cek berurutan:
+
+```bash
+podman logs --tail 100 <CONTAINER_NAME>
+podman exec <CONTAINER_NAME> tail -n 50 storage/logs/laravel.log
+curl -I http://127.0.0.1:<APP_PORT>
+```
+
+| Status | Kemungkinan penyebab |
+|--------|----------------------|
+| `500` | Error aplikasi: `APP_KEY` kosong, kredensial database salah, atau `vendor/` tidak lengkap. Lihat [HTTP 500](#http-500) |
+| `000` atau kosong | Tidak ada response. Pastikan `APP_PORT` di `.env` sama dengan port yang dipublikasikan container, dan container berstatus `running` |
+| `4xx` | Script menganggap status di luar 2xx/3xx sebagai gagal. Jika halaman utama butuh login atau membalas `404`, arahkan health check ke alamat lain: `HEALTH_URL=http://127.0.0.1:<APP_PORT>/up bash scripts/deploy.sh` |
 
 ## Cloudflare: origin berhasil, domain gagal
 

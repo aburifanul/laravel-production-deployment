@@ -93,7 +93,7 @@ Ikuti berurutan dari 1 sampai 6. Langkah 7 dan seterusnya dipakai setelah aplika
 | 4 | [Deploy di Server](docs/04-deploy-server.md) | Server | Clone, `.env` production, build, composer, migrate, cek origin |
 | 5 | [Hubungkan Domain](docs/05-hubungkan-domain.md) | Server + Cloudflare | Tunnel / Nginx / Apache, DNS, SSL |
 | 6 | [Verifikasi dan Autostart](docs/06-verifikasi-autostart.md) | Server | Tes berlapis, autostart, tes reboot, checklist akhir |
-| 7 | [Update dan Operasional](docs/07-update-dan-operasional.md) | Server | `deploy.sh`, log, restart, backup, maintenance |
+| 7 | [Update dan Operasional](docs/07-update-dan-operasional.md) | Server | `deploy.sh` (health check + opsi non-interaktif), log, restart, backup |
 | 8 | [Google OAuth](docs/08-google-oauth.md) | Server | Login Google (opsional) |
 | 9 | [Troubleshooting](docs/09-troubleshooting.md) | Kapan saja | Gejala umum dan cara memperbaikinya |
 
@@ -161,7 +161,9 @@ curl -I https://<APP_DOMAIN>
 
 ```bash
 cd /var/www/<APP_DOMAIN>
-bash scripts/deploy.sh
+bash scripts/deploy.sh                 # menanyakan apakah memakai Node/Vite
+bash scripts/deploy.sh --with-node     # build Vite tanpa bertanya
+bash scripts/deploy.sh --skip-node     # tanpa Vite, tanpa bertanya
 ```
 
 ## Placeholder
@@ -200,7 +202,7 @@ File-file ini disalin ke project Laravel kamu. Isi lengkap dan penjelasannya ada
 | [`docker-compose.yml`](docker-compose.yml) | Definisi container: nama dan port dari `.env`, bind ke `127.0.0.1`, `restart: always` |
 | [`.dockerignore`](.dockerignore) | File yang tidak ikut build (secret, `vendor`, cache) |
 | [`.env.example`](.env.example) | Template environment untuk lokal dan server |
-| [`scripts/deploy.sh`](scripts/deploy.sh) | Script update di server |
+| [`scripts/deploy.sh`](scripts/deploy.sh) | Script update di server: build, ganti container, composer, migrate, health check. Aman untuk banyak project dalam satu server |
 
 ## Struktur Repo
 

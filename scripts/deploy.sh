@@ -14,16 +14,39 @@ echo
 # Configuration
 # ========================================
 
-COMPOSE_SERVICE="app"
-APP_PORT="${APP_PORT:-8000}"
-HEALTH_URL="http://127.0.0.1:${APP_PORT}/"
+CONTAINER_NAME=""
+APP_PORT=""
+
+# Bisa diubah dari luar, contoh: HEALTH_URL=http://127.0.0.1:8000/up bash scripts/deploy.sh
+HEALTH_URL="${HEALTH_URL:-}"
 
 OLD_CONTAINER=""
 OLD_CONTAINER_NAME=""
 NEW_CONTAINER_NAME=""
+NEW_IMAGE=""
 ROLLBACK_IMAGE=""
 DEPLOYMENT_STARTED=0
 CONTAINER_REPLACED=0
+
+# Membaca nilai dari .env (komentar inline dan tanda kutip diabaikan)
+env_value() {
+    local key="$1"
+    local default="${2:-}"
+    local value
+
+    value="$(grep -E "^${key}=" .env | tail -n 1 | cut -d= -f2- || true)"
+
+    value="$(
+        printf '%s' "$value" | sed -E \
+            -e 's/[[:space:]]+#.*$//' \
+            -e 's/^[[:space:]]+//' \
+            -e 's/[[:space:]]+$//' \
+            -e 's/^"(.*)"$/\1/' \
+            -e "s/^'(.*)'\$/\\1/"
+    )"
+
+    printf '%s' "${value:-$default}"
+}
 
 # ========================================
 # Cleanup / Rollback
@@ -83,23 +106,44 @@ echo " Pre-flight Check"
 echo "========================================"
 echo
 
-if ! command -v podman >/dev/null 2>&1; then
-    echo "ERROR: Podman tidak ditemukan."
-    exit 1
-fi
-
-if ! command -v git >/dev/null 2>&1; then
-    echo "ERROR: Git tidak ditemukan."
-    exit 1
-fi
+for CMD in podman git curl; do
+    if ! command -v "$CMD" >/dev/null 2>&1; then
+        echo "ERROR: $CMD tidak ditemukan."
+        exit 1
+    fi
+done
 
 if [ ! -f docker-compose.yml ]; then
     echo "ERROR: docker-compose.yml tidak ditemukan."
     exit 1
 fi
 
-echo "Podman : $(podman --version)"
-echo "Git    : $(git --version)"
+if [ ! -f .env ]; then
+    echo "ERROR: File .env tidak ditemukan di $PWD."
+    echo "Buat dulu dari template: cp .env.example .env"
+    exit 1
+fi
+
+# Cegah dua deployment berjalan bersamaan di folder yang sama
+if command -v flock >/dev/null 2>&1; then
+    exec 9<.
+
+    if ! flock -n 9; then
+        echo "ERROR: Deployment lain sedang berjalan di $PWD."
+        echo "Tunggu sampai selesai, lalu jalankan lagi."
+        exit 1
+    fi
+fi
+
+CONTAINER_NAME="$(env_value CONTAINER_NAME app)"
+APP_PORT="$(env_value APP_PORT 8000)"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${APP_PORT}/}"
+
+echo "Podman    : $(podman --version)"
+echo "Git       : $(git --version)"
+echo "Project   : $(basename "$PWD")"
+echo "Container : $CONTAINER_NAME"
+echo "Port      : $APP_PORT"
 echo
 
 # ========================================
@@ -111,19 +155,43 @@ echo " Current Container"
 echo "========================================"
 echo
 
-OLD_CONTAINER="$(
-    podman ps -aq \
-        --filter "label=com.docker.compose.service=${COMPOSE_SERVICE}" \
-        | head -n 1
-)"
+# Container dicari berdasarkan CONTAINER_NAME dari .env (bukan label),
+# supaya aman jika satu server menjalankan banyak project.
+if podman container exists "$CONTAINER_NAME"; then
 
-if [ -n "$OLD_CONTAINER" ]; then
-
-    OLD_CONTAINER_NAME="$(
-        podman inspect "$OLD_CONTAINER" \
-            --format '{{.Name}}' \
-            | sed 's#^/##'
+    OLD_CONTAINER="$(
+        podman inspect "$CONTAINER_NAME" \
+            --format '{{.Id}}'
     )"
+
+    OLD_CONTAINER_NAME="$CONTAINER_NAME"
+
+    # Pastikan container ini milik folder project ini, bukan project lain
+    # yang kebetulan memakai CONTAINER_NAME yang sama.
+    OWNER_DIR="$(
+        podman inspect "$OLD_CONTAINER" \
+            --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' \
+            2>/dev/null || true
+    )"
+
+    if [ -n "$OWNER_DIR" ]; then
+
+        if [ "$(realpath -m "$OWNER_DIR")" != "$(pwd -P)" ]; then
+            echo "ERROR: Container '$CONTAINER_NAME' dimiliki project lain."
+            echo
+            echo "  Folder pemilik : $OWNER_DIR"
+            echo "  Folder ini     : $(pwd -P)"
+            echo
+            echo "Ubah CONTAINER_NAME di .env menjadi nama yang unik,"
+            echo "lalu jalankan lagi. Tidak ada container yang disentuh."
+            exit 1
+        fi
+
+    else
+        echo "WARNING: Pemilik container tidak dapat diverifikasi"
+        echo "(label com.docker.compose.project.working_dir tidak ada)."
+        echo
+    fi
 
     echo "Container production ditemukan:"
     echo "  Name : $OLD_CONTAINER_NAME"
@@ -166,7 +234,7 @@ echo " Git"
 echo "========================================"
 echo
 
-echo "[1/5] Mengambil update dari Git..."
+echo "Mengambil update dari Git..."
 echo
 
 git pull origin main
@@ -284,36 +352,6 @@ echo "Image berhasil dibuat."
 echo
 
 # ========================================
-# Verify New Image
-# ========================================
-
-echo "========================================"
-echo " Verify Image"
-echo "========================================"
-echo
-
-NEW_IMAGE="$(
-    podman images \
-        --format '{{.Repository}}:{{.Tag}}' \
-        | grep -E '^localhost/magangabsiwebid_app:latest$' \
-        | head -n 1 || true
-)"
-
-if [ -z "$NEW_IMAGE" ]; then
-
-    echo "ERROR: Image aplikasi baru tidak ditemukan."
-    echo
-    echo "Image yang tersedia:"
-    podman images
-
-    exit 1
-fi
-
-echo "Image baru:"
-echo "$NEW_IMAGE"
-echo
-
-# ========================================
 # Replace Container
 # ========================================
 
@@ -365,7 +403,7 @@ echo
 echo "Menjalankan container aplikasi..."
 echo
 
-podman compose up -d
+podman compose up -d 9>&-
 
 echo
 
@@ -373,18 +411,11 @@ echo
 # Get New App Container
 # ========================================
 
-echo "Mencari container service '${COMPOSE_SERVICE}'..."
+echo "Mencari container '${CONTAINER_NAME}'..."
 
 for i in {1..15}; do
 
-    NEW_CONTAINER_NAME="$(
-        podman ps -a \
-            --filter "label=com.docker.compose.service=${COMPOSE_SERVICE}" \
-            --format "{{.Names}}" \
-            | head -n 1
-    )"
-
-    if [ -n "$NEW_CONTAINER_NAME" ]; then
+    if podman container exists "$CONTAINER_NAME"; then
         break
     fi
 
@@ -392,10 +423,10 @@ for i in {1..15}; do
 
 done
 
-if [ -z "$NEW_CONTAINER_NAME" ]; then
+if ! podman container exists "$CONTAINER_NAME"; then
 
     echo
-    echo "ERROR: Container service '${COMPOSE_SERVICE}' tidak ditemukan."
+    echo "ERROR: Container '${CONTAINER_NAME}' tidak ditemukan."
     echo
 
     echo "Container yang tersedia:"
@@ -405,9 +436,19 @@ if [ -z "$NEW_CONTAINER_NAME" ]; then
     exit 1
 fi
 
+NEW_CONTAINER_NAME="$CONTAINER_NAME"
+
+NEW_IMAGE="$(
+    podman inspect "$NEW_CONTAINER_NAME" \
+        --format '{{.ImageName}}'
+)"
+
 echo
 echo "Container aplikasi:"
 echo "$NEW_CONTAINER_NAME"
+echo
+echo "Image:"
+echo "$NEW_IMAGE"
 echo
 
 # ========================================
@@ -478,73 +519,6 @@ echo "Container aplikasi running."
 echo
 
 # ========================================
-# HTTP Health Check
-# ========================================
-
-echo "========================================"
-echo " HTTP Health Check"
-echo "========================================"
-echo
-
-echo "Memeriksa:"
-echo "$HEALTH_URL"
-echo
-
-HTTP_OK=0
-
-for i in {1..30}; do
-
-    HTTP_STATUS="$(
-        curl \
-            --silent \
-            --show-error \
-            --output /dev/null \
-            --write-out '%{http_code}' \
-            --max-time 5 \
-            "$HEALTH_URL" \
-            2>/dev/null || true
-    )"
-
-    case "$HTTP_STATUS" in
-
-        2??|3??)
-
-            HTTP_OK=1
-            break
-            ;;
-
-    esac
-
-    sleep 1
-
-done
-
-if [ "$HTTP_OK" -ne 1 ]; then
-
-    echo
-    echo "ERROR: HTTP health check gagal."
-    echo
-
-    echo "HTTP status terakhir:"
-    echo "${HTTP_STATUS:-Tidak ada response}"
-    echo
-
-    echo "Container:"
-    podman ps -a \
-        --filter "name=^${NEW_CONTAINER_NAME}$"
-
-    echo
-    echo "Log container:"
-    podman logs --tail 100 "$NEW_CONTAINER_NAME" || true
-
-    exit 1
-fi
-
-echo "HTTP health check berhasil."
-echo "HTTP status: $HTTP_STATUS"
-echo
-
-# ========================================
 # Composer
 # ========================================
 
@@ -597,7 +571,7 @@ podman exec "$NEW_CONTAINER_NAME" \
 echo
 
 # ========================================
-# Final HTTP Check
+# Final Deployment Check
 # ========================================
 
 echo "========================================"
@@ -621,34 +595,53 @@ if [ "$FINAL_STATUS" != "running" ]; then
     exit 1
 fi
 
-FINAL_HTTP_STATUS="$(
-    curl \
-        --silent \
-        --show-error \
-        --output /dev/null \
-        --write-out '%{http_code}' \
-        --max-time 10 \
-        "$HEALTH_URL" \
-        2>/dev/null || true
-)"
+# Pemeriksaan HTTP dilakukan SETELAH composer dan migration,
+# karena sebelum itu aplikasi bisa saja belum siap melayani request.
+echo "Memeriksa:"
+echo "$HEALTH_URL"
+echo
 
-case "$FINAL_HTTP_STATUS" in
+HTTP_OK=0
+FINAL_HTTP_STATUS=""
 
-    2??|3??)
-        ;;
+for i in {1..30}; do
 
-    *)
-        echo "ERROR: Final HTTP health check gagal."
-        echo "HTTP status: ${FINAL_HTTP_STATUS:-Tidak ada response}"
+    FINAL_HTTP_STATUS="$(
+        curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --max-time 5 \
+            "$HEALTH_URL" \
+            2>/dev/null || true
+    )"
 
-        echo
-        echo "Log container:"
-        podman logs --tail 100 "$NEW_CONTAINER_NAME" || true
+    case "$FINAL_HTTP_STATUS" in
 
-        exit 1
-        ;;
+        2??|3??)
 
-esac
+            HTTP_OK=1
+            break
+            ;;
+
+    esac
+
+    sleep 1
+
+done
+
+if [ "$HTTP_OK" -ne 1 ]; then
+
+    echo "ERROR: HTTP health check gagal."
+    echo "HTTP status terakhir: ${FINAL_HTTP_STATUS:-Tidak ada response}"
+
+    echo
+    echo "Log container:"
+    podman logs --tail 100 "$NEW_CONTAINER_NAME" || true
+
+    exit 1
+fi
 
 echo "Container : $NEW_CONTAINER_NAME"
 echo "Status    : $FINAL_STATUS"
